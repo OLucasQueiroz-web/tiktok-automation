@@ -4,8 +4,15 @@ const { execSync, spawnSync } = require("child_process");
 const fs = require("fs");
 const { PNG } = require("/home/lucas/Documents/tiktok-automation/node_modules/pngjs");
 
+try {
+  fs.readFileSync(`${__dirname}/.env`, "utf8").split("\n").forEach(line => {
+    const m = line.match(/^([^=]+)=(.*)$/);
+    if (m && !(m[1].trim() in process.env)) process.env[m[1].trim()] = m[2].trim();
+  });
+} catch {}
+
 const TIKTOK_PACKAGE = "com.zhiliaoapp.musically";
-const SEARCH_QUERY = "felipyoms1g";
+const SEARCH_QUERY = "matheusemaryana";
 const LOOP_COUNT = 5;
 const UNLOCK_PIN = process.env.TIKTOK_PIN || "";
 
@@ -40,18 +47,12 @@ function unlockIfNeeded() {
     console.error("Dispositivo bloqueado. Defina TIKTOK_PIN=<senha> ou passe como: TIKTOK_PIN=1234 node open-tiktok.js");
     process.exit(1);
   }
-  console.log("Dispositivo bloqueado — desbloqueando...");
-  adb("shell", "input", "swipe", "500", "1500", "500", "500", "300");
-  sleep(600);
-  adb("shell", "input", "text", UNLOCK_PIN);
-  sleep(200);
-  adb("shell", "input", "keyevent", "KEYCODE_ENTER");
-  sleep(800);
-  if (isLocked()) {
-    console.error("Falha ao desbloquear. Verifique o PIN em TIKTOK_PIN.");
+  console.log("Dispositivo bloqueado — desbloqueando via unlock.js...");
+  const result = spawnSync("node", [`${__dirname}/unlock.js`, UNLOCK_PIN], { encoding: "utf8", stdio: "inherit" });
+  if (result.status !== 0) {
+    console.error("Falha ao desbloquear.");
     process.exit(1);
   }
-  console.log("Desbloqueado.");
 }
 
 function dumpUI(retries = 10, interval = 700) {
@@ -173,8 +174,8 @@ function findCartByColor() {
 
 // Processa um único vídeo: verifica carrinho, faz o fluxo completo e tira screenshot.
 // Retorna true se o produto foi processado, false se não havia carrinho.
-function processVideo(index) {
-  console.log(`\n=== Vídeo ${index + 1}/${LOOP_COUNT} ===`);
+function processVideo(scrollNum, productNum) {
+  console.log(`\n=== [Scroll ${scrollNum + 1}] Buscando produto ${productNum + 1}/${LOOP_COUNT} ===`);
 
   // Pausa o vídeo tocando na parte central superior
   console.log("Pausando vídeo...");
@@ -303,6 +304,7 @@ function processVideo(index) {
     productName = findProductName(xml);
   }
 
+  let rawName = "";
   if (productName) {
     console.log(`Nome do produto em (${productName.x}, ${productName.y}), clicando...`);
     tap(productName);
@@ -317,7 +319,7 @@ function processVideo(index) {
     if (ja5Exp) expandedName = { text: ja5Exp[1] };
     else expandedName = findProductName(xml);
 
-    const rawName = (expandedName?.text || productName.text)
+    rawName = (expandedName?.text || productName.text)
       .replace(/&#\d+;/g, "")
       .replace(/&[a-z]+;/g, "")
       .replace(/[￼�]/g, "")
@@ -347,7 +349,7 @@ function processVideo(index) {
     console.log("Overlay já fechado — sem ação.");
   }
 
-  return true;
+  return rawName;
 }
 
 function openTikTok() {
@@ -419,13 +421,28 @@ function openTikTok() {
   sleep(3500);
   wakeScreen();
 
-  // Loop principal: processa vídeo e swipa para o próximo no feed do perfil
+  // Loop principal: processa vídeo e swipa para o próximo no feed do perfil.
+  // Vídeos sem carrinho e produtos duplicados não consomem slot — o loop só avança
+  // quando encontra um produto novo. MAX_SCROLLS evita loop infinito.
+  const seenProducts = new Set();
   let processed = 0;
-  for (let i = 0; i < LOOP_COUNT; i++) {
-    const success = processVideo(i);
-    if (success) processed++;
+  let scrollsDone = 0;
+  const MAX_SCROLLS = LOOP_COUNT * 5;
 
-    if (i < LOOP_COUNT - 1) {
+  while (processed < LOOP_COUNT && scrollsDone < MAX_SCROLLS) {
+    const result = processVideo(scrollsDone, processed);
+    scrollsDone++;
+
+    if (result === false) {
+      // sem carrinho — não conta, não scrolla aqui pois o processVideo já despausa
+    } else if (result && seenProducts.has(result)) {
+      console.log(`Produto duplicado nesta automação: "${result}" — não conta no total.`);
+    } else {
+      if (result) seenProducts.add(result);
+      processed++;
+    }
+
+    if (processed < LOOP_COUNT) {
       console.log("Indo para o próximo vídeo...");
       adb("shell", "input", "swipe", "540", "1800", "540", "300", "500");
       sleep(2500);
