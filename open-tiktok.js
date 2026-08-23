@@ -12,7 +12,7 @@ try {
 } catch {}
 
 const TIKTOK_PACKAGE = "com.zhiliaoapp.musically";
-const SEARCH_QUERY = "matheusemaryana";
+const SEARCH_QUERY = "felipyoms1g";
 const LOOP_COUNT = 5;
 const UNLOCK_PIN = process.env.TIKTOK_PIN || "";
 
@@ -108,6 +108,14 @@ function findByResourceId(xml, id) {
   return findNode(xml, "resource-id", id);
 }
 
+function getNodeText(xml, resourceId) {
+  const esc = resourceId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const node = xml.match(new RegExp(`<node\\b[^>]*resource-id="${esc}"[^>]*>`));
+  if (!node) return null;
+  const t = node[0].match(/text="([^"]*)"/);
+  return t ? t[1] : null;
+}
+
 function findNode(xml, attr, value, minY = 0, maxY = Infinity) {
   const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const pattern = new RegExp(`<node\\b[^>]*${attr}="[^"]*${escaped}[^"]*"[^>]*>`, "gi");
@@ -182,10 +190,32 @@ function processVideo(scrollNum, productNum) {
   adb("shell", "input", "tap", "540", "600");
   sleep(1200);
 
+  // Verifica a idade do vídeo antes de qualquer ação.
+  // resource-id tv_post_time contém "· Há Xm/Xh/Xd" (confirmado nos dumps reais).
+  // Xm ou Xh → continua. Xd → vídeo muito antigo, encerra automação.
+  console.log("Verificando idade do vídeo...");
+  let xml = dumpUI();
+  let ageText = null;
+  for (let attempt = 0; attempt < 5 && !ageText; attempt++) {
+    if (attempt > 0) { sleep(700); xml = dumpUI(); }
+    ageText = getNodeText(xml, "com.zhiliaoapp.musically:id/tv_post_time");
+  }
+  if (ageText) {
+    console.log(`Idade do vídeo: ${ageText.trim()}`);
+    const ageMatch = ageText.match(/(\d+)([mhd])/);
+    if (ageMatch && ageMatch[2] === 'd') {
+      console.log("Vídeo muito antigo (dias) — encerrando automação.");
+      adb("shell", "input", "tap", "540", "600"); // despausa
+      sleep(500);
+      return "EXIT";
+    }
+  } else {
+    console.log("Idade do vídeo (tv_post_time) não encontrada — continuando.");
+  }
+
   // Busca carrinho via XML com até 4 tentativas (TikTok pode demorar a renderizar)
   // "Loja" está sempre escrito no botão — é o seletor mais confiável.
   console.log("Procurando carrinho...");
-  let xml = dumpUI();
   let cart = null;
   for (let attempt = 0; attempt < 4 && !cart; attempt++) {
     if (attempt > 0) { sleep(800); xml = dumpUI(); }
@@ -433,7 +463,10 @@ function openTikTok() {
     const result = processVideo(scrollsDone, processed);
     scrollsDone++;
 
-    if (result === false) {
+    if (result === "EXIT") {
+      console.log("Vídeo com mais de 1 dia — saindo do perfil.");
+      break;
+    } else if (result === false) {
       // sem carrinho — não conta, não scrolla aqui pois o processVideo já despausa
     } else if (result && seenProducts.has(result)) {
       console.log(`Produto duplicado nesta automação: "${result}" — não conta no total.`);
